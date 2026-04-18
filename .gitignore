@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.ipynb_checkpoints/
+
+*.tmp
+*.log
+Thumbs.db
+.DS_Store
+
+checkpoints/
+runs/
+outputs/
+tmp/
