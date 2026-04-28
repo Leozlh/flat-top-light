@@ -1,0 +1,847 @@
+\documentclass[aspectratio=169,10pt]{ctexbeamer}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{makecell}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+
+\title{新程序相对于 795 程序的优势与结构分析}
+\subtitle{详细汇报版：原始逻辑、模块来源、运行方式与优点}
+\author{}
+\date{2026-04-17}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{汇报结构}
+  \tableofcontents
+\end{frame}
+
+\section{原始 795 程序}
+
+\begin{frame}{795 程序的定位}
+  \begin{block}{基本定位}
+    \path{references/ftl_gen/795.py} 是围绕真实实验系统构建的工程优化脚本，其目标是在既定 SLM、既定目标和既定实验链路下，稳定地产生可直接用于实验的平顶光。
+  \end{block}
+
+  \begin{itemize}
+    \item SLM 面尺寸：\texttt{N=[1024,1272]}
+    \item 输出面尺寸：\texttt{NT=[6876,6876]}
+    \item 主要依赖：\texttt{SLM\_1X.py}、\texttt{CG\_2.py}、\texttt{CG\_new.py}
+    \item 目标特点：以线形平顶光为主，而不是默认圆形平顶
+    \item 运行环境：直接面向实验装置，可接相机和 SLM 回写
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{795 的整体运行顺序}
+  \begin{enumerate}
+    \item 读取实验分辨率、光学参数与目标偏移
+    \item 生成入射激光包络
+    \item 在输出面构造目标振幅和目标相位
+    \item 构造加权掩模 \texttt{Wcg / W99}
+    \item 生成初始猜测相位 \texttt{phase\_guess}
+    \item 用 CG 优化相位
+    \item 保存阶段性相位和强度结果
+    \item 若接入实验，则通过相机测量修正目标并重新优化
+  \end{enumerate}
+
+  \vspace{0.4em}
+  \begin{block}{核心特征}
+    原始 \texttt{795} 的重点不在于形成统一的软件框架，而在于针对当前实验系统把整条链路调通。
+  \end{block}
+\end{frame}
+
+\begin{frame}{795 的目标构造}
+  \begin{itemize}
+    \item 原始脚本中目标振幅不是简单圆形平顶，而是通过 \texttt{slm.gaussian\_line2(...)} 构造
+    \item 其物理含义是：
+    \begin{itemize}
+      \item 一个方向存在有限平顶宽度
+      \item 另一个方向保持高斯衰减
+    \end{itemize}
+    \item 目标相位则通常使用 \texttt{slm.phase\_flat(...)}，即输出区相位尽量保持平坦
+    \item 这一目标定义与原始实验目标强绑定，因此更偏“线形平顶实验脚本”，而不是通用全息优化器
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{795 的加权区域设计}
+  \begin{itemize}
+    \item 原始脚本先通过 \texttt{slm.flat\_top\_round(...)} 构造一个目标区域掩模
+    \item 再通过 \texttt{slm.weighting\_value(...)} 形成 \texttt{Wcg}
+    \item 同时根据目标强度的前 $99\%$ 区域构造 \texttt{W99}
+    \item 最后令 \texttt{Wcg=W99}，把优化重点集中在真正关心的区域
+  \end{itemize}
+
+  \vspace{0.4em}
+  \begin{block}{意义}
+    这一步反映出 795 的工程思想：不追求输出平面的全局一致，而是优先保证实验中真正使用的有效区域。
+  \end{block}
+\end{frame}
+
+\begin{frame}{795 的初始相位与传播模型}
+  \begin{itemize}
+    \item 初始相位由 \texttt{phase\_guess(...)} 生成
+    \item 其中显式包含：
+    \begin{itemize}
+      \item 线性倾斜项：控制傅里叶面偏移
+      \item 二次曲率项：控制包络尺度
+      \item 环形项：辅助控制整体分布
+    \end{itemize}
+    \item 传播模型由 \texttt{SLM\_1X} 和脚本中的 Fourier operator 共同完成
+    \item 在每次传播后，脚本会显式计算输出振幅、相位、overlap 和效率
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{795 的优化方式}
+  \begin{itemize}
+    \item 并不是只有一个 cost function
+    \item 原始脚本里至少包含三类思路：
+    \begin{enumerate}
+      \item 加权区域内的振幅平方误差
+      \item 基于 overlap 的保真度误差
+      \item overlap 与效率惩罚组合的目标函数
+    \end{enumerate}
+    \item 优化器主要使用：
+    \begin{itemize}
+      \item \texttt{CG\_2.CG}
+      \item \texttt{CG\_new.CG}
+    \end{itemize}
+    \item 运行方式通常是短步数预优化 + 较长步数精修
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{795 的实验闭环}
+  \begin{itemize}
+    \item 原始脚本可以直接调用 \texttt{IDS\_Camera.GetImage()}
+    \item 对采集图像进行裁剪、求质心、修正目标
+    \item 再重新执行优化
+    \item 最终通过 \texttt{slm\_play.update(...)} 把新相位写回 SLM
+  \end{itemize}
+
+  \vspace{0.4em}
+  \begin{block}{结论}
+    原始 \texttt{795} 是“目标构造 + 加权设计 + 共轭梯度 + 实验反馈”一体化的实验工程方法。
+  \end{block}
+\end{frame}
+
+\begin{frame}{795 的优点与局限}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \textbf{优点}
+      \begin{itemize}
+        \item 最贴近真实实验
+        \item 目标与权重设计经验充分
+        \item 参考相位具备直接实验价值
+        \item 可以接入相机闭环
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \textbf{局限}
+      \begin{itemize}
+        \item 对具体实验条件绑定很强
+        \item 泛化能力不足
+        \item 难以统一比较不同路线
+        \item 难以直接接入现代训练流程
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\section{Bowman 与 Lin 思路}
+
+\begin{frame}{Bowman：参考路线的定位}
+  \begin{block}{我对 Bowman 的基本理解}
+    Bowman 路线的核心，不是“某个固定 CG 代码”，而是把全息问题视作一个\textbf{显式传播模型下的直接物理优化问题}：
+    \begin{itemize}
+      \item 目标场是明确给定的
+      \item 傅里叶传播模型是明确给定的
+      \item 代价函数直接定义在输出场 fidelity、phase 和 efficiency 上
+      \item 最终通过数值优化直接更新 SLM phase
+    \end{itemize}
+  \end{block}
+
+  \vspace{0.4em}
+  \begin{itemize}
+    \item 这条路线的强项是：物理意义清晰、结果可解释、最终收尾稳定
+    \item 它的短板是：对初始化比较敏感，直接从较差初值出发时成本较高
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Bowman：源码中的落点与当前吸收方式}
+  \textbf{可对应的源码/材料}
+  \begin{itemize}
+    \item \texttt{references/Bowman/*.pdf}：思想来源
+    \item \texttt{references/ftl\_gen/795.py}：原始实验脚本里的目标/传播/优化工程经验
+    \item \texttt{ai\_holography/hybrid.py}：当前系统中的 \texttt{bowman\_cg\_refine(...)}
+    \item \texttt{ai\_holography/scripts/compare\_bowman\_ai.py}：Bowman / AI / hybrid 对比入口
+  \end{itemize}
+
+  \textbf{当前系统如何吸收 Bowman}
+  \begin{itemize}
+    \item 保留“显式傅里叶传播 + 直接物理目标函数优化”的主线
+    \item 在 \texttt{hybrid.py} 中把收尾拆成：
+    \begin{itemize}
+      \item \texttt{efficiency\_overlap}
+      \item \texttt{composite}
+      \item \texttt{phase\_priority}
+    \end{itemize}
+    \item 说明 Bowman 在当前系统里承担的是：\textbf{最终物理收尾机制}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Lin：参考路线的定位}
+  \begin{block}{我对 Lin 的基本理解}
+    Lin 路线的核心，不是“让 CNN 直接输出最终 hologram”，而是先把问题改写到\textbf{更适合学习的表示域}：
+    \begin{itemize}
+      \item 用位置域 amplitude / phase 作为监督对象
+      \item 输入目标振幅、目标相位和任务相关 mask
+      \item 再通过 FFT / 逆变换恢复 hologram 初值
+    \end{itemize}
+  \end{block}
+
+  \vspace{0.4em}
+  \begin{itemize}
+    \item 这条路线的强项是：能学习“什么样的初始化更容易成功”
+    \item 它的短板是：单独作为最终求解器时，物理一致性和稳定性通常不如后端物理优化
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Lin：源码中的落点与当前吸收方式}
+  \textbf{可对应的源码/材料}
+  \begin{itemize}
+    \item \texttt{references/lin/*.pdf}：Lin 论文来源
+    \item \texttt{lin2025\_holography/README.md}：位置域预测主线说明
+    \item \texttt{lin2025\_holography/model.py}：\texttt{Lin2025HologramNet}
+    \item \texttt{lin2025\_holography/training.py}：teacher distillation + flat-top metric training
+  \end{itemize}
+
+  \textbf{当前系统如何吸收 Lin}
+  \begin{itemize}
+    \item 保留“位置域预测，再转 hologram”的核心思想
+    \item 训练时不只做 supervised loss，还叠加：
+    \begin{itemize}
+      \item \texttt{teacher phase distillation}
+      \item \texttt{flat-top metric loss}
+    \end{itemize}
+    \item 说明 Lin 在当前系统里承担的是：\textbf{学习型初始化器}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{为什么当前系统最终采用 Bowman + Lin 的混合路线}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \textbf{如果只有 Bowman}
+      \begin{itemize}
+        \item 物理一致性强
+        \item 最终结果稳
+        \item 但初值敏感，搜索成本高
+      \end{itemize}
+
+      \textbf{如果只有 Lin}
+      \begin{itemize}
+        \item 初始化快
+        \item 可以从数据中学到统计规律
+        \item 但单独作为最终解时不够稳
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \textbf{当前混合路线}
+      \begin{itemize}
+        \item 先用 Lin 学到更优初值
+        \item 再用 Bowman 风格物理优化做最终收尾
+        \item 中间由 runner 负责 route 选优
+        \item 最后由 benchmark 负责统一比较
+      \end{itemize}
+
+      \vspace{0.5em}
+      \begin{alertblock}{一句话}
+        Lin 解决“从哪里开始更好”，Bowman 解决“最后怎样收得更稳、更符合物理约束”。
+      \end{alertblock}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{四条路线的角色对照：795 / Bowman / Lin / 当前混合系统}
+  \scriptsize
+  \begin{tabular}{>{\raggedright\arraybackslash}p{0.14\linewidth} >{\raggedright\arraybackslash}p{0.18\linewidth} >{\raggedright\arraybackslash}p{0.18\linewidth} >{\raggedright\arraybackslash}p{0.18\linewidth} >{\raggedright\arraybackslash}p{0.22\linewidth}}
+    \toprule
+    项目 & \texttt{795} & Bowman & Lin & 当前混合系统 \\
+    \midrule
+    核心定位 & 实验导向脚本与参考相位来源 & 直接物理目标函数优化 & 学习型初始化器 & 统一 route + init + hybrid 的完整系统 \\
+    主要强项 & 最贴近真实实验，经验充分 & 物理一致性强，结果可解释 & 能学到更优初始化规律 & 同时吸收实验先验、学习先验和物理收尾 \\
+    主要短板 & 条件绑定强，难统一比较 & 对初值敏感，成本较高 & 单独作为最终解时不够稳 & 结构更复杂，对配置一致性要求更高 \\
+    解决的问题 & 给出已验证的目标/相位工程经验 & 解决“最后怎么收得稳” & 解决“从哪里开始更好” & 把前面三者接成可复现主线 \\
+    在当前代码中的对应 & \texttt{references/ftl\_gen/795.py}、\texttt{795\_*.npy} & \texttt{ai\_holography/hybrid.py} & \texttt{lin2025\_holography/model.py / training.py} & \texttt{runner.py + pipeline.py + benchmark} \\
+    当前答辩里的推荐表述 & 历史实验先验与参考基线 & 最终物理收尾机制 & 学习型初始化器 & 当前真正要交付和解释的主线 \\
+    \bottomrule
+  \end{tabular}
+\end{frame}
+
+\section{新程序整体流程}
+
+\begin{frame}{新程序的总体设计目标}
+  \begin{itemize}
+    \item 保留 \texttt{795} 的实验先验
+    \item 保留 Bowman/hybrid 的物理一致性
+    \item 引入 Lin2025 风格的学习型初始化
+    \item 建立统一 benchmark 和分析框架
+    \item 建立远程训练、本地分析的可迭代工作流
+  \end{itemize}
+
+  \vspace{0.4em}
+  \begin{block}{总体思路}
+    新程序不是简单替换原始方法，而是把 \texttt{795}、Bowman 和 Lin 的优势整合为一条可持续迭代的混合路线。
+  \end{block}
+\end{frame}
+
+\begin{frame}{新程序整体运行流程}
+  \[
+  \text{目标场构造}
+  \rightarrow
+  \text{参考相位与 teacher 管理}
+  \rightarrow
+  \text{初始化候选生成}
+  \rightarrow
+  \text{候选选优}
+  \]
+  \[
+  \rightarrow
+  \text{phase-only correction}
+  \rightarrow
+  \text{多分辨率 refine}
+  \rightarrow
+  \text{Bowman-style hybrid polish}
+  \rightarrow
+  \text{统一 benchmark/分析}
+  \]
+
+  \vspace{0.4em}
+  \begin{itemize}
+    \item 旧程序更像单链路工程脚本
+    \item 新程序更像模块化系统
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{新程序的目录结构}
+  \begin{columns}[T]
+    \begin{column}{0.33\textwidth}
+      \textbf{\texttt{references/ftl\_gen}}
+      \begin{itemize}
+        \item 原始 795 脚本
+        \item 参考相位
+        \item 原始 CG 模块
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.33\textwidth}
+      \textbf{\texttt{ai\_holography}}
+      \begin{itemize}
+        \item 目标构造
+        \item 传播与损失
+        \item runner 与 hybrid polish
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.33\textwidth}
+      \textbf{\texttt{lin2025\_holography}}
+      \begin{itemize}
+        \item 数据集
+        \item 模型
+        \item 训练与推理
+      \end{itemize}
+    \end{column}
+  \end{columns}
+
+  \vspace{0.5em}
+  \begin{itemize}
+    \item \texttt{colab\_local\_split}：远程训练、本地分析入口
+    \item \texttt{report\_package\_20260331}：汇报材料与结果整理
+  \end{itemize}
+\end{frame}
+
+\section{AutoDL notebook 演进}
+
+\begin{frame}{版本演进总览}
+  \begin{columns}[T]
+    \begin{column}{0.56\textwidth}
+      \small
+      \begin{tabular}{>{\raggedright\arraybackslash}p{0.19\linewidth} >{\raggedright\arraybackslash}p{0.73\linewidth}}
+        \toprule
+        阶段 & 含义 \\
+        \midrule
+        \texttt{v2-v10} & 最早的 AutoDL 自包含化搭建期 \\
+        \texttt{v11-v18} & legacy task / flat-top 调参与训练稳定期 \\
+        \texttt{v19-v30} & line-flat 主线形成期 \\
+        \texttt{v31-v39} & 主线稳定前的过渡扫参与整合期 \\
+        \texttt{v40-v50} & 集成 notebook + 历史表出现期 \\
+        \texttt{v51-v58} & 高分辨率 / line-flat / 结构一致性修复期 \\
+        \bottomrule
+      \end{tabular}
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \small
+      \begin{block}{关键拐点}
+        \begin{itemize}
+          \item \texttt{v30}：第一代强主线骨架
+          \item \texttt{v42a}：reference-floor 单变量修复
+          \item \texttt{v43}：checkpoint 路径与权重隔离
+          \item \texttt{v53}：高分辨率 line-flat 的效率修复
+          \item \texttt{v56}：结构一致性修复
+        \end{itemize}
+      \end{block}
+      \begin{alertblock}{已知元数据漂移}
+        \begin{itemize}
+          \item \texttt{v20} 标题误写成 \texttt{v21}
+          \item \texttt{v50-v52} 仍沿用 \texttt{v44} 标题/说明
+          \item \texttt{v54-v55} 仍沿用 \texttt{v53}
+          \item \texttt{v57} 仍沿用 \texttt{v56}
+        \end{itemize}
+      \end{alertblock}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{v2-v18 / v19-v39：从可运行到主线成形}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \scriptsize
+      \textbf{早期搭建与训练稳定化}
+      \begin{tabular}{>{\raggedright\arraybackslash}p{0.16\linewidth} >{\raggedright\arraybackslash}p{0.74\linewidth}}
+        \toprule
+        版本 & 核心变化 \\
+        \midrule
+        \texttt{v2-v8} & 自包含 notebook 骨架逐步成形，写源码/训练/导出/benchmark 被放进同一工作流 \\
+        \texttt{v9} & 795 参考相位生成改走 CPU，避开 AutoDL 上 FFT / cuFFT 报错 \\
+        \texttt{v11} & OOM 回退策略改成先降 batch，不先降模型容量 \\
+        \texttt{v14-v15} & 参考目标改成带 \texttt{sx/sy} 的 line-flat，teacher 池也收紧到 line-flat 任务 \\
+        \texttt{v16-v18} & 继续强化 hybrid teacher 与 phase imitation，为后续主线做准备 \\
+        \bottomrule
+      \end{tabular}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \scriptsize
+      \textbf{line-flat 主线形成}
+      \begin{tabular}{>{\raggedright\arraybackslash}p{0.16\linewidth} >{\raggedright\arraybackslash}p{0.74\linewidth}}
+        \toprule
+        版本 & 核心变化 \\
+        \midrule
+        \texttt{v19} & 第一次出现较像样的 line-flat 指标，证明 learned init + hybrid 路线可行 \\
+        \texttt{v23} & 首次把 \texttt{795 / hybrid / balanced / quality / feedback\_proxy} 放进同一 benchmark \\
+        \texttt{v25} & 结果查看不再截断长 JSON，高分辨率 \texttt{1024x1272} 导出链成熟 \\
+        \texttt{v28-v29} & 主排序切到 core-phase-first，\texttt{feedback\_proxy} 明确标成 exploratory \\
+        \texttt{v30} & 形成最强可复用的 quality family，是后续所有集成版的算法主锚点 \\
+        \texttt{v33-v39} & 围绕 \texttt{v30} 做窄扫参、低效率 basin 诊断、历史表整理，最终确认应回到 \texttt{v30} 主线 \\
+        \bottomrule
+      \end{tabular}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{v40-v50：集成 notebook 与历史表阶段}
+  \scriptsize
+  \begin{tabular}{>{\raggedright\arraybackslash}p{0.12\linewidth} >{\raggedright\arraybackslash}p{0.27\linewidth} >{\raggedright\arraybackslash}p{0.26\linewidth} >{\raggedright\arraybackslash}p{0.24\linewidth}}
+    \toprule
+    版本 & 主变化 & 学到的结论 & 对当前主线的意义 \\
+    \midrule
+    \texttt{v40} & 把 quality sweep 收回到真正赢出的 \texttt{baseline + best\_hybrid\_polish} 附近 & 集成版的重点应是收束而不是扩家族 & 直接引向后续干净基座 \\
+    \texttt{v41} & 先修 reference phase 与 ROI 覆盖，再做局部 quality sweep & 结构问题会直接污染路线判断 & 为单变量 ablation 铺路 \\
+    \texttt{v42a} & 只改 Cell5 参考相位生成的 \texttt{efficiency\_floor=0.05} & reference-floor 修复可单独验证 & 关键拐点之一 \\
+    \texttt{v42b} & 只改 ROI 覆盖，不动 floor/base cfg & ROI 扩张本身不足以成为默认主线 & 只保留为历史注释 \\
+    \texttt{v43} & checkpoint 从共享 \texttt{wider\_net} 拆到独立路径 & 代码版本与权重版本必须隔离 & 关键拐点之一 \\
+    \texttt{v44} & 集成 \texttt{v30 + v42a + v43}，形成干净基座 & 有了可长期迭代的统一底座 & 集成阶段核心锚点 \\
+    \texttt{v45-v47} & 结果页、历史表、图片摆放持续清理；\texttt{v46} 还加入 phasor / TV / teacher annealing 等升级 & 文档可读性与算法试验都开始重要 & \texttt{v46} 是重要算法分支，\texttt{v45/v47} 主要修展示 \\
+    \texttt{v48-v49} & 基本沿用 \texttt{v47}，但 Change Log 和标题开始滞后 & 不能再只靠首段说明判断真实改动 & 版本史必须人工重建 \\
+    \texttt{v50} & 基于 \texttt{v44} 做 balanced 权重配置，但元数据回退到 \texttt{v44} & core uniformity 变好，效率却因旧 floor 塌到约 11\% & 直接引出 \texttt{v51-v53} 修复链 \\
+    \bottomrule
+  \end{tabular}
+\end{frame}
+
+\begin{frame}{v51-v58：高分辨率、结构一致性与当前推荐版本}
+  \scriptsize
+  \begin{tabular}{>{\raggedright\arraybackslash}p{0.12\linewidth} >{\raggedright\arraybackslash}p{0.27\linewidth} >{\raggedright\arraybackslash}p{0.25\linewidth} >{\raggedright\arraybackslash}p{0.24\linewidth}}
+    \toprule
+    版本 & 主变化 & 学到的结论 & 当前判断 \\
+    \midrule
+    \texttt{v51} & 修中文编码、把 route 图片移到最后一个单元；标题仍写 \texttt{v44} & 文案修复不能解决低效率根因 & 过渡版 \\
+    \texttt{v52} & SLM 提到 \texttt{1024x1024}，加入 \texttt{line\_flat\_top\_target}；标题仍写 \texttt{v44} & 高分辨率和 line-flat 能跑，但效率仍被旧 floor 锁死 & 为 \texttt{v53} 提供直接问题定义 \\
+    \texttt{v53} & 把 \texttt{efficiency\_floor} 从 0.05 提到 0.80，并提高 efficiency 权重 & 高分辨率 + line-flat 重新回到可用区间 & 关键拐点之一 \\
+    \texttt{v54-v55} & 延续 \texttt{v53} 分支复跑，但标题/说明仍沿用 \texttt{v53} & 元数据漂移继续累积，结构问题比算法问题更显眼 & 作为 \texttt{v56} 的前奏 \\
+    \texttt{v56} & 去重复写文件循环、统一 floor 与 route score、训练 floor 提到 0.30、\texttt{output\_size} 提到 4096 & 当前主要风险从算法转到结构与一致性 & 关键拐点之一 \\
+    \texttt{v57} & 基于 \texttt{v56} 继续整理，但标题仍写 \texttt{v56}，导出和 summary 路径仍未完全对齐 & 生成器与成品 notebook 已经不同步 & 不是稳定交付版 \\
+    \texttt{v58} & 保留 \texttt{v56} 主线，补回真实导出单元、统一 \texttt{summary.json} 路径、补 \texttt{best\_route\_reason}、修运行目录 & 当前更像结构/一致性稳定版，而不是新的算法代际 & 当前推荐同步进汇报包的附件 \\
+    \bottomrule
+  \end{tabular}
+
+  \vspace{0.5em}
+  \begin{block}{明确结论}
+    当前推荐交付 notebook = \texttt{v58}；当前算法关键拐点 = \texttt{v30 / v42a / v43 / v53 / v56}。
+  \end{block}
+\end{frame}
+
+\section{新程序详细模块分析}
+
+\begin{frame}{模块 1：目标与参考相位模块}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{ai\_holography/targets.py}
+    \item \texttt{ai\_holography/references.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item 目标构造思路参考 \texttt{795.py} 中的目标振幅、目标相位和加权区域定义
+    \item 参考相位读取直接继承自 \texttt{795\_*.npy} 这一工程资产
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{itemize}
+    \item 由 \texttt{pipeline.build\_problem()} 自动调用
+    \item 也可由 benchmark 脚本通过 \texttt{apply\_795\_reference\_metadata(...)} 自动适配
+  \end{itemize}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 统一了目标定义
+    \item 把参考相位变成可管理、可比较的先验来源
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{模块 2：传播与损失模块}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{ai\_holography/propagation.py}
+    \item \texttt{ai\_holography/losses.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item 传播建模和直接优化思路主要参考 Bowman
+    \item 多目标损失中的 overlap、uniformity、phase 和 efficiency 则综合了 Bowman 与当前实验需求
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{itemize}
+    \item 在训练阶段被 \texttt{PhaseInitNet} 和 \texttt{Lin2025} 训练调用
+    \item 在推理阶段被 refine 和 hybrid polish 反复调用
+  \end{itemize}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 物理意义清晰
+    \item 可以统一衡量核心区均匀性、核心区等相位和效率
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{模块 3：AIHolographyPipeline}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{ai\_holography/pipeline.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item 保留 Bowman 的物理传播与优化主线
+    \item 引入 AI-first 重构思想，把目标构造、初始相位预测和多分辨率 refine 统一进同一 pipeline
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{itemize}
+    \item 由 \texttt{HybridHolographyRunner} 调用
+    \item 核心步骤包括：
+    \begin{itemize}
+      \item \texttt{build\_problem()}
+      \item \texttt{predict\_initial\_phase()}
+      \item \texttt{refine()}
+    \end{itemize}
+  \end{itemize}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 把原始分散逻辑重组为统一流程
+    \item 易于插入新初始化器、校正项和不同 profile
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{模块 4：HybridHolographyRunner}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{ai\_holography/runner.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item 借鉴 795 的参考相位和 warm start 思想
+    \item 借鉴 Lin 的学习型初始化思路
+    \item 保留 Bowman 的最终物理收尾
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{itemize}
+    \item 主入口类：\texttt{HybridHolographyRunner}
+    \item 主要步骤：
+    \begin{enumerate}
+      \item 生成 neural/reference/lin2025/warm\_start 候选
+      \item 估计 overlap 和 init score
+      \item 选出更优初始化
+      \item 执行 phase-only correction
+      \item 调用 refine 和 hybrid polish
+    \end{enumerate}
+  \end{itemize}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 解决了 Bowman 对初值敏感的问题
+    \item 把不同来源的初始化统一到一套选优机制中
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{模块 5：Bowman-style hybrid polish}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{ai\_holography/hybrid.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item 直接继承 Bowman 的共轭梯度物理优化思想
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{itemize}
+    \item 主函数：\texttt{bowman\_cg\_refine(...)}
+    \item 内部包含三种阶段：
+    \begin{enumerate}
+      \item \texttt{efficiency\_overlap} 阶段
+      \item \texttt{composite} 阶段
+      \item \texttt{phase\_priority} 阶段
+    \end{enumerate}
+  \end{itemize}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 物理一致性最强
+    \item 是当前系统最终质量的核心保障
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{模块 6：Lin2025 数据集与 teacher 策略}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{lin2025\_holography/dataset.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item Lin 原文中的“位置域输入、位置域监督”思想
+    \item 795 参考相位
+    \item 当前系统自己跑出的 hybrid 高质量结果
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{itemize}
+    \item 训练时通过 \texttt{create\_dataset(...)} 创建数据集
+    \item 当前主要使用 \texttt{FlatTopReferenceDataset}
+    \item teacher 来源可在 flat\_top / round\_top、795 / hybrid 之间切换
+  \end{itemize}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 把经验参考与物理最优结果同时纳入 teacher
+    \item 允许持续通过 benchmark 结果反哺训练
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{模块 7：Lin2025 网络结构}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{lin2025\_holography/model.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item Lin 原文中“先在位置域预测，再经 FFT 得到 hologram”的核心思想
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{itemize}
+    \item 核心类：\texttt{Lin2025HologramNet}
+    \item 输入：
+    \begin{itemize}
+      \item 目标振幅
+      \item 目标相位
+      \item core mask
+      \item ROI mask
+    \end{itemize}
+    \item 输出：
+    \begin{itemize}
+      \item 位置域振幅
+      \item 位置域相位
+    \end{itemize}
+    \item 最后通过 \texttt{position\_to\_hologram(...)} 变成全息初值
+  \end{itemize}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 不直接硬学频域相位，训练更稳定
+    \item 更适合和物理后端配合
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{模块 8：Lin2025 训练循环}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{lin2025\_holography/training.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item Lin 的监督学习框架
+    \item 当前平顶光任务特有的核心区质量指标
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{itemize}
+    \item 主入口：\texttt{train\_lin2025\_model(cfg)}
+    \item 训练损失由五部分组成：振幅监督、相位监督、hologram 场误差、teacher phase distillation、flat-top 质量损失
+    \item 输出三个主要 checkpoint：\texttt{best\_supervised}、\texttt{best\_quality}、\texttt{best\_hybrid\_polish}
+  \end{itemize}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 不再只凭经验选相位
+    \item 允许通过训练不断提升初始化质量
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{模块 9：统一 benchmark}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{ai\_holography/scripts/benchmark\_lin2025\_hybrid.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item 参考 795 和 Bowman 的历史基线
+    \item 用统一指标比较多条路线
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{itemize}
+    \item 直接运行：
+    \begin{itemize}
+      \item \texttt{python ai\_holography/scripts/benchmark\_lin2025\_hybrid.py}
+    \end{itemize}
+    \item 输出路线：
+    \begin{itemize}
+      \item \texttt{795\_only}
+      \item \texttt{hybrid\_only}
+      \item \texttt{lin2025\_only}
+      \item \texttt{lin2025\_plus\_hybrid\_balanced}
+      \item \texttt{lin2025\_plus\_hybrid\_quality}
+    \end{itemize}
+  \end{itemize}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 可以清楚回答“相对 795 到底提升了多少”
+    \item 可以比较不同路线的 trade-off
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{模块 10：远程训练与本地分析}
+  \textbf{对应文件}
+  \begin{itemize}
+    \item \texttt{colab\_local\_split/train\_lin2025\_autodl\_lineflat\_highres\_export\_v58.ipynb}
+    \item \texttt{colab\_local\_split/analyze\_lin2025\_checkpoint\_local.py}
+  \end{itemize}
+
+  \textbf{参考来源}
+  \begin{itemize}
+    \item 工程上为了解决 GPU 训练与本地统一分析的分工问题
+  \end{itemize}
+
+  \textbf{如何运行}
+  \begin{enumerate}
+    \item 在远程平台训练并导出 checkpoint bundle
+    \item 下载回本地放入新的 checkpoint 目录
+    \item 本地运行分析脚本，自动比较 official best 并给出调参建议
+  \end{enumerate}
+
+  \textbf{优点}
+  \begin{itemize}
+    \item 训练和分析解耦
+    \item 便于持续筛选更优 checkpoint
+  \end{itemize}
+\end{frame}
+
+\section{结果与优势总结}
+
+\begin{frame}{结果对比}
+  \centering
+  \small
+  \begin{tabular}{>{\raggedright\arraybackslash}p{0.42\linewidth}ccc}
+    \toprule
+    路线 & 核心区均匀性损失 & 核心区相位平坦度 & 效率 \\
+    \midrule
+    \texttt{795\_only} & 0.02897 & 0.02716 & 0.25359 \\
+    \texttt{hybrid\_only} & 0.03093 & 0.00302 & 0.85184 \\
+    \texttt{lin2025\_plus\_hybrid\_balanced} & 0.03003 & 0.00192 & 0.82033 \\
+    \texttt{lin2025\_plus\_hybrid\_quality} & 0.02693 & 0.00408 & 0.79291 \\
+    \texttt{AutoDL best supervised quality} & 0.02640 & 0.00134 & 0.78949 \\
+    \bottomrule
+  \end{tabular}
+\end{frame}
+
+\begin{frame}{相对于 795 的优势}
+  \begin{itemize}
+    \item 不再依赖单一经验参考相位
+    \item 可以统一比较多条路线
+    \item 可以通过训练持续提升初始化质量
+    \item 在核心区等相位和效率上明显优于 \texttt{795\_only}
+    \item 已形成标准化 benchmark 和 checkpoint 选优流程
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{相对于 Bowman/hybrid 的价值}
+  \begin{itemize}
+    \item 不替代 Bowman，而是补强其最大短板：初始化
+    \item 让后端物理优化更容易进入高质量区域
+    \item 在若干结果中，已经找到优于纯 Bowman 基线的 Pareto 点
+    \item 保留物理一致性，避免神经网络单独输出不稳定的问题
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{当前不足}
+  \begin{itemize}
+    \item 默认目标仍偏圆形平顶，与原始线形平顶不完全一致
+    \item 默认主流程仍以仿真闭环为主，尚未完全恢复真实相机闭环
+    \item 分辨率尚未完全对齐实验 SLM
+    \item checkpoint 仍存在波动
+    \item 质量与效率之间仍有 trade-off
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{最终结论}
+  \begin{block}{核心结论}
+    新程序相对于 \texttt{795} 的最大改进，不是单一算法更换，而是把 \texttt{795} 的实验先验、Bowman 的物理优化主线和 Lin 的学习型初始化思想整合成了一套完整系统。
+  \end{block}
+
+  \begin{itemize}
+    \item 795 负责提供经验参考与实验先验
+    \item Lin2025 负责提供更优初始化
+    \item Bowman/hybrid 负责最终物理收尾
+    \item benchmark 与本地分析负责统一评估与持续迭代
+    \item 当前推荐交付 notebook = \texttt{v58}；真正决定当前算法方向的关键版本 = \texttt{v30 / v42a / v43 / v53 / v56}
+  \end{itemize}
+\end{frame}
+
+\end{document}
