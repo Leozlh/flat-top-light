@@ -119,19 +119,6 @@ The current version demonstrates a neural-network-based workflow for line flat-t
 
 ---
 
-## 用于申请的说明 / Application Evidence
-
-本仓库主要作为 AI 创作者激励 / token plan 申请的项目证明材料。
-
-它用于证明我已经将 Codex 应用于真实神经网络研发流程中，包括代码理解、问题定位、训练优化、benchmark 对比和结果导出。虽然项目仍处于早期整理阶段，但已经包含核心代码、运行流程、结果材料和 AI Coding Agent 参与开发的证据。
-
-This repository is mainly used as supporting material for an AI creator / token-plan application.
-
-It provides evidence that Codex was used as an AI coding agent in a real technical project, rather than only for simple Q&A. The uploaded materials show the development loop from code analysis, training/debugging, benchmark comparison, to result export.
-
-The project is still in an early research and organization stage. Future updates will improve documentation, reproducibility, benchmark clarity, and result visualization.
-
----
 
 ## Notes
 
